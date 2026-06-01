@@ -29,6 +29,7 @@ set(CMAKE_CXX_STANDARD 23)
 # find_package(usbipdcpp CONFIG REQUIRED COMPONENTS libusb)
 
 set(USBIPDCPP_BUILD_LIBUSB_COMPONENTS ON)
+set(USBIPDCPP_BUILD_SHARED_LIBS OFF)
 add_subdirectory(usbipdcpp)
 
 add_library(usbipdcpp_native SHARED

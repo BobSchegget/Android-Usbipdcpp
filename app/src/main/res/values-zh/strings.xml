@@ -38,6 +38,7 @@
     <!-- Toast Messages -->
     <string name="please_start_server">请先启动服务器</string>
     <string name="permission_denied">权限被拒绝</string>
+    <string name="device_unavailable">设备不可用（可能被系统占用）</string>
     <string name="bind_success">绑定成功: %1$s</string>
     <string name="bind_failed">绑定失败: %1$s</string>
     <string name="unbind_success">已解绑: %1$s</string>

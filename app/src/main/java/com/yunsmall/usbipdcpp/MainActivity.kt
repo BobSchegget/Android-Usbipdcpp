@@ -1,5 +1,7 @@
 package com.yunsmall.usbipdcpp
 
+import android.Manifest
+import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.content.ClipData
@@ -7,6 +9,7 @@ import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.content.ServiceConnection
 import android.os.Bundle
@@ -15,8 +18,11 @@ import android.util.Log
 import android.widget.Toast
 import java.net.NetworkInterface
 import java.util.Locale
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.content.ContextCompat
 import androidx.core.os.LocaleListCompat
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -143,6 +149,13 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
+fun isCameraDevice(device: UsbDevice): Boolean {
+    for (i in 0 until device.interfaceCount) {
+        if (device.getInterface(i).interfaceClass == UsbConstants.USB_CLASS_VIDEO) return true
+    }
+    return false
+}
+
 fun setLanguage(language: String) {
     val localeList = if (language == "system") {
         LocaleListCompat.getEmptyLocaleList()
@@ -172,9 +185,57 @@ fun MainScreen(
     var showLanguageMenu by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var busyDevices by remember { mutableStateOf(setOf<String>()) }
+    var pendingBindDevice by remember { mutableStateOf<UsbDevice?>(null) }
 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    // 执行设备绑定（USB 权限 + native 绑定）
+    fun performBind(device: UsbDevice) {
+        val service = usbService ?: run {
+            Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val deviceName = device.productName?.takeIf { it.isNotEmpty() }
+            ?: context.getString(R.string.unknown_device)
+        permissionManager.requestPermission(device) { _, granted ->
+            if (granted) {
+                scope.launch {
+                    busyDevices = busyDevices + device.deviceName
+                    try {
+                        val result = service.bindDevice(usbManager, device)
+                        boundDevices = usbService?.boundDeviceNames ?: emptySet()
+                        when (result) {
+                            is DeviceBindResult.Success -> {
+                                Toast.makeText(context, context.getString(R.string.bind_success, deviceName), Toast.LENGTH_SHORT).show()
+                            }
+                            is DeviceBindResult.Failure -> {
+                                Toast.makeText(context, context.getString(R.string.bind_failed, result.getMessage(context)), Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } finally {
+                        busyDevices = busyDevices - device.deviceName
+                    }
+                }
+            } else {
+                Toast.makeText(context, context.getString(R.string.device_unavailable), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // 相机权限请求
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        pendingBindDevice?.let { device ->
+            pendingBindDevice = null
+            if (granted) {
+                performBind(device)
+            } else {
+                Toast.makeText(context, context.getString(R.string.device_unavailable), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     fun addLog(message: String) {
         logMessages = logMessages + "[${java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date())}] $message"
@@ -374,36 +435,18 @@ fun MainScreen(
                         Toast.makeText(context, context.getString(R.string.please_start_server), Toast.LENGTH_SHORT).show()
                         return@DeviceListSection
                     }
-                    val service = usbService
-                    if (service == null) {
+                    if (usbService == null) {
                         Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
                         return@DeviceListSection
                     }
-                    val deviceName = device.productName?.takeIf { it.isNotEmpty() }
-                        ?: context.getString(R.string.unknown_device)
-                    permissionManager.requestPermission(device) { _, granted ->
-                        if (granted) {
-                            scope.launch {
-                                busyDevices = busyDevices + device.deviceName
-                                try {
-                                    val result = service.bindDevice(usbManager, device)
-                                    // 无论成功失败都刷新，确保 UI 与 Service 状态一致
-                                    boundDevices = service.boundDeviceNames
-                                    when (result) {
-                                        is DeviceBindResult.Success -> {
-                                            Toast.makeText(context, context.getString(R.string.bind_success, deviceName), Toast.LENGTH_SHORT).show()
-                                        }
-                                        is DeviceBindResult.Failure -> {
-                                            Toast.makeText(context, context.getString(R.string.bind_failed, result.getMessage(context)), Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                } finally {
-                                    busyDevices = busyDevices - device.deviceName
-                                }
-                            }
-                        } else {
-                            Toast.makeText(context, context.getString(R.string.permission_denied), Toast.LENGTH_SHORT).show()
-                        }
+                    // 摄像头设备需要先获取 CAMERA 权限
+                    if (isCameraDevice(device) &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        pendingBindDevice = device
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    } else {
+                        performBind(device)
                     }
                 },
                 onUnbindDevice = { device ->

@@ -140,7 +140,7 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceNative(
         return ErrorCode::DEVICE_NOT_FOUND;
     }
 
-    std::string busid = usbipdcpp::get_device_busid(dev, true);
+    std::string busid = usbipdcpp::get_device_busid(dev);
     libusb_close(temp_handle);
 
     spdlog::info("Device bound successfully: {}", busid);
@@ -175,7 +175,6 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_startServer(JNIEnv* env, jobject thiz, j
     try {
         g_server = std::make_unique<usbipdcpp::LibusbServer>();
         g_server->set_hotplug_enabled(false);
-        g_server->set_busid_include_address(true);
         asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), static_cast<unsigned short>(port));
         g_server->start(endpoint);
         g_server_running = true;
