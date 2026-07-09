@@ -15,8 +15,8 @@ android {
         applicationId = "com.yunsmall.usbipdcpp"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.0.6"
+        versionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 1
+        versionName = (project.findProperty("versionName") as? String) ?: "0.0.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -33,8 +33,23 @@ android {
         }
     }
 
+    val keystorePath = System.getenv("KEYSTORE_PATH")
+    signingConfigs {
+        if (keystorePath != null) {
+            create("ci") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (keystorePath != null) {
+                signingConfig = signingConfigs.getByName("ci")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

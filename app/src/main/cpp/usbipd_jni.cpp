@@ -7,9 +7,9 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/android_sink.h>
 
-#include <Server.h>
-#include <LibusbHandler/LibusbServer.h>
-#include <LibusbHandler/tools.h>
+#include <usbipdcpp/Server.h>
+#include <usbipdcpp/LibusbHandler/LibusbServer.h>
+#include <usbipdcpp/LibusbHandler/tools.h>
 
 #include "jni_callback_sink.h"
 #include "jni_log_callback.h"

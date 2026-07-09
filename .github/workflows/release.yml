@@ -1,0 +1,111 @@
+# 发布 Release APK（手动触发或推送 v* tag 自动触发）
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: 检出代码（含子模块）
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 设置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 提取版本号
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "版本: $VERSION"
+
+      - name: 安装 NDK 29.0.14033849
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;29.0.14033849" 2>/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14033849" >> $GITHUB_ENV
+
+      - name: 设置 vcpkg
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
+
+      - name: 缓存 Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/*.gradle.kts', '**/*.gradle', 'gradle/libs.versions.toml') }}
+          restore-keys: gradle-
+
+      - name: 缓存 vcpkg 包
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/vcpkg/packages
+            ~/vcpkg/buildtrees
+          key: vcpkg-${{ hashFiles('app/src/main/cpp/vcpkg.json') }}
+          restore-keys: vcpkg-
+
+      - name: 解码 keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > keystore.jks
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/keystore.jks" >> $GITHUB_ENV
+            echo "keystore 已解码"
+          else
+            echo "未配置 KEYSTORE_BASE64，将使用默认签名"
+          fi
+
+      - name: 安装构建工具（vcpkg libusb 需要 autotools）
+        run: sudo apt-get install -y autoconf autoconf-archive automake libtool
+
+      - name: 编译 APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug assembleRelease -PversionName=$APP_VERSION
+
+      - name: 重命名 APK
+        run: |
+          mkdir -p apks
+          cp app/build/outputs/apk/debug/app-debug.apk "apks/usbipdcpp-v${APP_VERSION}-debug.apk"
+          cp app/build/outputs/apk/release/app-release.apk "apks/usbipdcpp-v${APP_VERSION}-release.apk"
+          ls -lh apks/
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: usbipdcpp-v${{ env.APP_VERSION }}
+          path: apks/*.apk
+          if-no-files-found: error
+
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: apks/*.apk
+          generate_release_notes: true

@@ -1,0 +1,75 @@
+# 手动编译 APK（仅验证编译，不发布）
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '构建类型'
+        required: true
+        type: choice
+        default: 'debug'
+        options:
+          - debug
+          - release
+
+jobs:
+  build:
+    name: Build ${{ inputs.build_type }} APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: 检出代码（含子模块）
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 设置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 安装 NDK 29.0.14033849
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;29.0.14033849" 2>/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14033849" >> $GITHUB_ENV
+
+      - name: 设置 vcpkg
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
+
+      - name: 缓存 Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/*.gradle.kts', '**/*.gradle', 'gradle/libs.versions.toml') }}
+          restore-keys: gradle-
+
+      - name: 缓存 vcpkg 包
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/vcpkg/packages
+            ~/vcpkg/buildtrees
+          key: vcpkg-${{ hashFiles('app/src/main/cpp/vcpkg.json') }}
+          restore-keys: vcpkg-
+
+      - name: 安装构建工具（vcpkg libusb 需要 autotools）
+        run: sudo apt-get install -y autoconf autoconf-archive automake libtool
+
+      - name: 编译 APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assemble${{ inputs.build_type == 'debug' && 'Debug' || 'Release' }}
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: usbipdcpp-${{ inputs.build_type }}
+          path: app/build/outputs/apk/${{ inputs.build_type }}/*.apk
+          if-no-files-found: error

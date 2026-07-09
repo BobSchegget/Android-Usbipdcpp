@@ -27,7 +27,7 @@ Android Device                    Remote Computer
     │                                   │
     │  1. 🔌 Connect USB device         │
     │  2. ▶️ Start server               │
-    │  3. ✅ Grant USB permission        │
+    │  3. ✅ Grant USB permission       │
     │  4. 📎 Bind device                │
     │                                   │
     │◀──────── Network ────────────────▶│
