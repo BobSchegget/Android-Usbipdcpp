@@ -109,3 +109,5 @@ jobs:
         with:
           files: apks/*.apk
           generate_release_notes: true
+          # 默认发布为 pre-release，验证没问题后手动改为正式 release
+          prerelease: true

@@ -57,6 +57,10 @@ import com.yunsmall.usbipdcpp.ui.theme.UsbipdcppTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+// 文件顶层常量：MainScreen 是顶层函数而非 MainActivity 方法，
+// 常量放 companion（private）会访问不到
+private const val TAG = "MainActivity"
+
 class MainActivity : AppCompatActivity() {
 
     private val usbManager: UsbManager by lazy {
@@ -138,7 +142,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleUsbIntent(intent: Intent?) {
         if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            Log.d("MainActivity", "USB device attached via intent")
+            Log.d(TAG, "USB device attached via intent")
             refreshDevicesCallback?.invoke()
         }
     }
@@ -305,7 +309,7 @@ fun MainScreen(
                 }
             }
         } catch (e: Exception) {
-            Log.e("MainActivity", "Failed to get IP address", e)
+            Log.e(TAG, "Failed to get IP address", e)
         }
         return null
     }
