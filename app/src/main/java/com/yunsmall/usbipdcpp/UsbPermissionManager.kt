@@ -30,8 +30,11 @@ class UsbPermissionManager(
         PendingIntent.getBroadcast(context, 0, intent, flags)
     }
 
-    private var onPermissionResult: ((UsbDevice, Boolean) -> Unit)? = null
-    private var pendingDevice: UsbDevice? = null
+    // 统一锁对象：onReceive 与 requestPermission 各自 synchronized(this) 时
+    // this 指向不同对象（Receiver 实例 vs Manager 实例），互斥完全不生效
+    private val lock = Any()
+    // 按 deviceName 存待处理请求：多设备并发请求互不覆盖，回调后立即移除
+    private val pendingCallbacks = mutableMapOf<String, (UsbDevice, Boolean) -> Unit>()
     private var onDeviceAttached: (() -> Unit)? = null
     private var onDeviceDetached: ((UsbDevice) -> Unit)? = null
 
@@ -47,22 +50,24 @@ class UsbPermissionManager(
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 ACTION_USB_PERMISSION -> {
-                    synchronized(this) {
-                        val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                    val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                    }
+
+                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+
+                    device?.let { usbDevice ->
+                        Log.d(TAG, "USB permission result for ${usbDevice.deviceName}: $granted")
+                        // 锁内只取出，锁外执行回调：回调可能再次发起权限请求，
+                        // 锁内同步执行用户代码（锁不可重入）有死锁风险
+                        val callback = synchronized(lock) {
+                            // 取用后移除：回调闭包持有 Activity 引用，不清理会泄漏
+                            pendingCallbacks.remove(usbDevice.deviceName)
                         }
-
-                        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-
-                        device?.let { usbDevice ->
-                            Log.d(TAG, "USB permission result for ${usbDevice.deviceName}: $granted")
-                            onPermissionResult?.invoke(usbDevice, granted)
-                        }
-
-                        pendingDevice = null
+                        callback?.invoke(usbDevice, granted)
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
@@ -78,9 +83,12 @@ class UsbPermissionManager(
                     }
                     device?.let { usbDevice ->
                         Log.d(TAG, "USB device detached: ${usbDevice.deviceName}")
+                        // onDeviceDetached 只负责解绑清理，不刷设备列表；
+                        // 下面的 onDeviceAttached 才负责刷新设备列表，
+                        // 两个回调职责不同，不算重复刷新
                         onDeviceDetached?.invoke(usbDevice)
                     }
-                    // 同时刷新设备列表
+                    // 设备物理拔出，设备列表必须刷新
                     onDeviceAttached?.invoke()
                 }
             }
@@ -123,11 +131,16 @@ class UsbPermissionManager(
             return
         }
 
-        synchronized(this) {
-            pendingDevice = device
-            onPermissionResult = callback
-            usbManager.requestPermission(device, permissionIntent)
+        // 锁内只存回调，锁外发起系统请求：避免持锁调用可能同步回调的外部代码。
+        // 同一设备已有待处理请求时忽略新的：重复点击会导致系统只弹一次对话框，
+        // 回调被覆盖后前一次请求的 UI 状态（如 busyDevices）无法清除
+        synchronized(lock) {
+            if (pendingCallbacks.containsKey(device.deviceName)) {
+                return
+            }
+            pendingCallbacks[device.deviceName] = callback
         }
+        usbManager.requestPermission(device, permissionIntent)
     }
 
     fun openDevice(device: UsbDevice): UsbDeviceConnection? {

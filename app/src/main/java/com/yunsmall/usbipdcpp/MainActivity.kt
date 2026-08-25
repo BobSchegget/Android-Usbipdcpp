@@ -13,9 +13,13 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.content.ServiceConnection
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
 import java.util.Locale
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -204,7 +208,9 @@ fun MainScreen(
                     busyDevices = busyDevices + device.deviceName
                     try {
                         val result = service.bindDevice(usbManager, device)
-                        boundDevices = usbService?.boundDeviceNames ?: emptySet()
+                        // 用局部 service 刷新：绑定期间 Activity 重建可能更换
+                        // usbService 引用，用外部变量会读到不一致的状态
+                        boundDevices = service.boundDeviceNames
                         when (result) {
                             is DeviceBindResult.Success -> {
                                 Toast.makeText(context, context.getString(R.string.bind_success, deviceName), Toast.LENGTH_SHORT).show()
@@ -283,20 +289,25 @@ fun MainScreen(
     // 获取IP地址
     LaunchedEffect(serverRunning) {
         if (serverRunning) {
-            ipAddress.value = getDeviceIpAddress()
+            // 网络接口枚举可能耗时（多虚拟网卡时），放 IO 线程避免卡主线程
+            ipAddress.value = withContext(Dispatchers.IO) { getDeviceIpAddress() }
         }
     }
 
     // 设置native日志回调
     DisposableEffect(Unit) {
+        // onLog 由 native 日志线程回调，直接更新 Compose 状态会跨线程写，
+        // 切到主线程再执行
+        val mainHandler = Handler(Looper.getMainLooper())
         val callback = object : LogCallback {
             override fun onLog(level: Int, message: String) {
-                addLog(message.trim())
+                mainHandler.post { addLog(message.trim()) }
             }
         }
         UsbIpNative.setLogCallback(callback)
         onDispose {
-            // 不在这里清理，因为native层可能还在使用
+            // 这里无需清理：Activity 重建后新的 DisposableEffect 会再次调用
+            // setLogCallback，JNI 侧在替换时释放旧回调的全局引用，不会泄漏
         }
     }
 

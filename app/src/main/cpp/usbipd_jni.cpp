@@ -29,9 +29,10 @@ namespace ErrorCode {
 }
 
 namespace {
-    JavaVM* g_jvm = nullptr;
     std::mutex g_server_mutex;
     std::unique_ptr<usbipdcpp::LibusbServer> g_server;
+    // 原子变量：并发调用 nativeInit 时只初始化一次（实际调用路径
+    // 经 nativeDispatcher 单线程串行，原子性作为防御）
     std::atomic<bool> g_initialized{false};
     std::atomic<bool> g_server_running{false};
 
@@ -53,7 +54,6 @@ namespace {
 extern "C" {
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    g_jvm = vm;
     return JNI_VERSION_1_6;
 }
 
@@ -64,7 +64,10 @@ JNIEXPORT jboolean JNICALL
 Java_com_yunsmall_usbipdcpp_UsbIpNative_nativeInit(JNIEnv* env, jobject thiz) {
     __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "Initializing native layer");
 
-    if (g_initialized) {
+    // compare_exchange 原子抢锁：并发调用时只有一个线程执行初始化。
+    // 调用路径经 nativeDispatcher 单线程串行，此处作为并发防御
+    bool expected = false;
+    if (!g_initialized.compare_exchange_strong(expected, true)) {
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "Already initialized");
         return JNI_TRUE;
     }
@@ -74,21 +77,40 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_nativeInit(JNIEnv* env, jobject thiz) {
     int err = libusb_init(nullptr);
     if (err < 0) {
         __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "Failed to initialize libusb: %s", libusb_strerror(err));
+        // 初始化失败要复位，否则永久卡在"已初始化"状态无法重试
+        g_initialized = false;
         return JNI_FALSE;
     }
 
-    g_initialized = true;
     __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "Native layer initialized successfully");
     return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL
 Java_com_yunsmall_usbipdcpp_UsbIpNative_setLogCallback(JNIEnv* env, jobject thiz, jobject callback) {
+    if (callback == nullptr) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "setLogCallback with null callback");
+        return;
+    }
+
     jobject callback_global = env->NewGlobalRef(callback);
+    if (callback_global == nullptr) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "NewGlobalRef failed");
+        return;
+    }
+
     jclass callback_class = env->GetObjectClass(callback);
     jmethodID log_method = env->GetMethodID(callback_class, "onLog", "(ILjava/lang/String;)V");
+    env->DeleteLocalRef(callback_class);
+    if (log_method == nullptr) {
+        // GetMethodID 失败时 JNI 栈上挂着 NoSuchMethodError，清掉并释放引用
+        env->ExceptionClear();
+        env->DeleteGlobalRef(callback_global);
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "Failed to find onLog method");
+        return;
+    }
 
-    jni_log::init(g_jvm, callback_global, log_method);
+    jni_log::init(env, callback_global, log_method);
 
     auto android_sink = std::make_shared<spdlog::sinks::android_sink_mt>("usbipdcpp");
     auto jni_sink = std::make_shared<jni_callback_sink_mt>(jni_log::log_callback);
@@ -126,10 +148,18 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceNative(
     }
 
     // 获取 busid
+    // 再次 wrap fd 是 usbipdcpp 的标准用法：bind_host_device_with_wrapped_fd
+    // 内部同样是"临时 wrap → 取 libusb_device → 关 handle"，且服务器是
+    // lazy binding（客户端连接时才真正打开设备），这里 close 临时句柄不会
+    // 影响服务器侧
     libusb_device_handle* temp_handle = nullptr;
     int err = libusb_wrap_sys_device(nullptr, static_cast<intptr_t>(fd), &temp_handle);
     if (err < 0) {
         spdlog::error("Failed to get device info for busid: {}", libusb_strerror(err));
+        // 设备已绑定成功，取 busid 失败则回滚，避免 native 层残留已绑定设备
+        if (g_server->unbind_host_device_by_fd(static_cast<intptr_t>(fd)) != usbipdcpp::DeviceOperationResult::Success) {
+            spdlog::warn("Rollback unbind failed for fd={}", fd);
+        }
         return ErrorCode::DEVICE_OPEN_FAILED;
     }
 
@@ -137,6 +167,9 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceNative(
     if (!dev) {
         spdlog::error("libusb_get_device returned nullptr");
         libusb_close(temp_handle);
+        if (g_server->unbind_host_device_by_fd(static_cast<intptr_t>(fd)) != usbipdcpp::DeviceOperationResult::Success) {
+            spdlog::warn("Rollback unbind failed for fd={}", fd);
+        }
         return ErrorCode::DEVICE_NOT_FOUND;
     }
 
@@ -147,7 +180,18 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceNative(
 
     // 输出 busid
     if (outBusid != nullptr && env->GetArrayLength(outBusid) > 0) {
-        env->SetObjectArrayElement(outBusid, 0, env->NewStringUTF(busid.c_str()));
+        jstring busid_str = env->NewStringUTF(busid.c_str());
+        if (busid_str == nullptr) {
+            // OOM 时 NewStringUTF 返回 null：写 null 进数组会让 Kotlin 侧
+            // outBusid[0]!! 抛 NPE，回滚绑定并返回错误
+            env->ExceptionClear();
+            if (g_server->unbind_host_device_by_fd(static_cast<intptr_t>(fd)) != usbipdcpp::DeviceOperationResult::Success) {
+                spdlog::warn("Rollback unbind failed for fd={}", fd);
+            }
+            return ErrorCode::UNKNOWN_ERROR;
+        }
+        env->SetObjectArrayElement(outBusid, 0, busid_str);
+        env->DeleteLocalRef(busid_str);
     }
 
     return ErrorCode::SUCCESS;
@@ -219,7 +263,10 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServer(JNIEnv* env, jobject thiz) {
 
         spdlog::info("Server stopped successfully");
     } catch (const std::exception& e) {
+        // 停止失败也必须重置状态，否则 g_server_running 卡在 true 无法再次启动
         spdlog::error("Error stopping server: {}", e.what());
+        g_server.reset();
+        g_server_running = false;
     }
 }
 
