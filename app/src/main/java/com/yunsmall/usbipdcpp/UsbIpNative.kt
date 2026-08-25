@@ -8,7 +8,10 @@ import kotlinx.coroutines.withContext
 object UsbIpNative {
     private const val TAG = "UsbIpNative"
 
-    // 单线程 Dispatcher，确保所有 LibusbServer 调用在同一线程
+    // 单线程 Dispatcher，确保所有 LibusbServer 调用串行执行：
+    // LibusbServer 类内部没有锁（状态变量/容器并发访问会把状态搞乱），
+    // 所有调用必须同一时刻只有一个在执行。limitedParallelism(1) 保证
+    // 并发度 1 即串行即可，不要求物理同线程（类内无 thread_local）
     val nativeDispatcher = Dispatchers.IO.limitedParallelism(1)
 
     // 错误码定义 - 必须与 JNI 层 usbipd_jni.cpp 中的 ErrorCode 命名空间保持一致

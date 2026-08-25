@@ -83,6 +83,11 @@ class UsbPermissionManager(
                     }
                     device?.let { usbDevice ->
                         Log.d(TAG, "USB device detached: ${usbDevice.deviceName}")
+                        // 拔出后权限结果广播不会返回，清掉对应 pending 回调，
+                        // 否则条目残留会让该设备名后续无法再发起权限请求
+                        synchronized(lock) {
+                            pendingCallbacks.remove(usbDevice.deviceName)
+                        }
                         // onDeviceDetached 只负责解绑清理，不刷设备列表；
                         // 下面的 onDeviceAttached 才负责刷新设备列表，
                         // 两个回调职责不同，不算重复刷新

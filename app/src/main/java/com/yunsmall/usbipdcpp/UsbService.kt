@@ -296,7 +296,8 @@ class UsbService : Service() {
     private fun createNotification(): Notification {
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.server_running))
+            // 动态显示运行状态：服务器未运行时提示已停止，避免误导
+            .setContentText(getString(if (serverRunning) R.string.server_running else R.string.server_stopped))
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setOngoing(true)
             .build()

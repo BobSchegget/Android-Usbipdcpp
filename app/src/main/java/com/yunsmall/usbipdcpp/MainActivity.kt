@@ -145,8 +145,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // 释放回调引用：闭包捕获 Compose 状态，不清理会在销毁后滞留
+        // 释放回调引用：闭包捕获 Compose 状态，不清理会在销毁后滞留。
+        // Compose 的 onDispose 也会置空，这里双保险覆盖"onDestroy 后、
+        // Compose 销毁前"的窗口
         refreshDevicesCallback = null
+        onServiceStateChanged = null
         permissionManager.unregisterReceiver()
         if (serviceBound) {
             unbindService(serviceConnection)
@@ -288,6 +291,9 @@ fun MainScreen(
                 val networkInterface = interfaces.nextElement()
                 // 跳过回环接口和未启用的接口
                 if (networkInterface.isLoopback || !networkInterface.isUp) continue
+                // 跳过 VPN/虚拟网卡（tun/ppp 前缀），避免返回虚拟接口地址
+                val ifName = networkInterface.name?.lowercase(Locale.getDefault()) ?: ""
+                if (ifName.startsWith("tun") || ifName.startsWith("ppp") || ifName.startsWith("vpn")) continue
 
                 val addresses = networkInterface.inetAddresses
                 while (addresses.hasMoreElements()) {
@@ -543,7 +549,13 @@ fun MainScreen(
     }
 
     if (showAbout) {
-        val version = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
+        // 当前包名查不到自己的信息理论上不可能，但规范上还是防御一下
+        val version = try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get package info", e)
+            "unknown"
+        }
         val githubUrl = "https://github.com/yunsmall/Android-Usbipdcpp"
         AlertDialog(
             onDismissRequest = { showAbout = false },
