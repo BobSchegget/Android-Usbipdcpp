@@ -176,11 +176,19 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_startServer(JNIEnv* env, jobject thiz, j
         g_server = std::make_unique<usbipdcpp::LibusbServer>();
         g_server->set_hotplug_enabled(false);
         asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), static_cast<unsigned short>(port));
-        g_server->start(endpoint);
+        // v1.0.8 起 start 不再抛异常，启动失败（如端口被占用）通过返回值报告
+        auto ec = g_server->start(endpoint);
+        if (ec) {
+            spdlog::error("Failed to start server: {}", ec.message());
+            // start 失败路径内部已自清理（热插拔监控、libusb 事件线程），无需 stop 直接析构
+            g_server.reset();
+            return JNI_FALSE;
+        }
         g_server_running = true;
         spdlog::info("Server started successfully");
         return JNI_TRUE;
     } catch (const std::exception& e) {
+        // make_unique 等构造路径的异常兜底（start 本身不再抛）
         spdlog::error("Failed to start server: {}", e.what());
         if (g_server) {
             try {
