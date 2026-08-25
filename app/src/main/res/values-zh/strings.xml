@@ -53,6 +53,10 @@
     <string name="error_get_config_failed">获取配置描述符失败</string>
     <string name="error_claim_interface_failed">声明接口失败</string>
     <string name="error_unknown">未知错误</string>
+    <string name="service_not_ready">服务未就绪</string>
+    <string name="log_copied">日志已复制</string>
+    <string name="native_init_failed">native 库初始化失败</string>
+    <string name="permission_request_pending">权限请求已在进行</string>
 
     <!-- Language -->
     <string name="language">语言</string>

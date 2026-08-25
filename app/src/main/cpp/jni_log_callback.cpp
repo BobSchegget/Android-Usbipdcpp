@@ -66,7 +66,14 @@ void log_callback(spdlog::level::level_enum level, const std::string& message) {
         callback = env->NewLocalRef(g_callback_obj);
         method = g_log_method;
     }
-    if (!env || !callback || !method) return;
+    if (!env || !callback || !method) {
+        // NewLocalRef 失败（OOM）时已 attach 的线程必须 detach，
+        // 否则线程永久附加在 JVM 上
+        if (need_detach) {
+            jvm->DetachCurrentThread();
+        }
+        return;
+    }
 
     jstring jmessage = env->NewStringUTF(message.c_str());
     if (!jmessage) {

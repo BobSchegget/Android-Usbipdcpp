@@ -43,6 +43,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -144,6 +145,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // 释放回调引用：闭包捕获 Compose 状态，不清理会在销毁后滞留
+        refreshDevicesCallback = null
         permissionManager.unregisterReceiver()
         if (serviceBound) {
             unbindService(serviceConnection)
@@ -189,20 +192,32 @@ fun MainScreen(
     var showLanguageMenu by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var busyDevices by remember { mutableStateOf(setOf<String>()) }
-    var pendingBindDevice by remember { mutableStateOf<UsbDevice?>(null) }
+    // 存设备名而非 UsbDevice 对象（非 Parcelable 无法存 SavedState）：
+    // 权限对话框期间系统回收 Activity（如"不保留活动"）后重建时，
+    // remember 状态会丢，rememberSaveable 保证授权回调仍能找到待绑定设备
+    var pendingBindDeviceName by rememberSaveable { mutableStateOf<String?>(null) }
 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    // performBind 会被 rememberLauncherForActivityResult 的回调长期持有（首次组合
+    // 的实例），必须经 rememberUpdatedState 读最新 usbService，否则授权后拿到
+    // 的是服务绑定前的 null 快照，绑定必然失败
+    val currentUsbService by rememberUpdatedState(usbService)
 
     // 执行设备绑定（USB 权限 + native 绑定）
     fun performBind(device: UsbDevice) {
-        val service = usbService ?: run {
-            Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+        val service = currentUsbService ?: run {
+            Toast.makeText(context, context.getString(R.string.service_not_ready), Toast.LENGTH_SHORT).show()
+            return
+        }
+        // native 初始化失败时绑定无意义，明确提示而非等 native 返回模糊错误
+        if (!service.nativeReady) {
+            Toast.makeText(context, context.getString(R.string.native_init_failed), Toast.LENGTH_SHORT).show()
             return
         }
         val deviceName = device.productName?.takeIf { it.isNotEmpty() }
             ?: context.getString(R.string.unknown_device)
-        permissionManager.requestPermission(device) { _, granted ->
+        val accepted = permissionManager.requestPermission(device) { _, granted ->
             if (granted) {
                 scope.launch {
                     busyDevices = busyDevices + device.deviceName
@@ -227,19 +242,24 @@ fun MainScreen(
                 Toast.makeText(context, context.getString(R.string.device_unavailable), Toast.LENGTH_SHORT).show()
             }
         }
+        if (!accepted) {
+            // 请求未受理：同设备已有待处理的权限请求，明确提示避免误以为无反应
+            Toast.makeText(context, context.getString(R.string.permission_request_pending), Toast.LENGTH_SHORT).show()
+        }
     }
 
     // 相机权限请求
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        pendingBindDevice?.let { device ->
-            pendingBindDevice = null
-            if (granted) {
-                performBind(device)
-            } else {
-                Toast.makeText(context, context.getString(R.string.device_unavailable), Toast.LENGTH_SHORT).show()
-            }
+        val deviceName = pendingBindDeviceName ?: return@rememberLauncherForActivityResult
+        pendingBindDeviceName = null
+        // Activity 重建后从设备列表重新查找设备对象
+        val device = usbManager.deviceList[deviceName] ?: return@rememberLauncherForActivityResult
+        if (granted) {
+            performBind(device)
+        } else {
+            Toast.makeText(context, context.getString(R.string.device_unavailable), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -306,8 +326,10 @@ fun MainScreen(
         }
         UsbIpNative.setLogCallback(callback)
         onDispose {
-            // 这里无需清理：Activity 重建后新的 DisposableEffect 会再次调用
-            // setLogCallback，JNI 侧在替换时释放旧回调的全局引用，不会泄漏
+            // 必须清回调：旋转重建时新 setLogCallback 会替换旧引用（无需清理），
+            // 但应用退后台（Activity 销毁、不再有新回调）时不清的话，JNI 的
+            // 全局引用会一直持有旧 Activity，导致泄漏
+            UsbIpNative.setLogCallback(null)
         }
     }
 
@@ -400,7 +422,12 @@ fun MainScreen(
                     val port = portText.toIntOrNull() ?: 3240
                     val service = usbService
                     if (service == null) {
-                        Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.service_not_ready), Toast.LENGTH_SHORT).show()
+                        return@ServerControlPanel
+                    }
+                    // native 初始化失败时无法启动服务器，明确提示
+                    if (!service.nativeReady) {
+                        Toast.makeText(context, context.getString(R.string.native_init_failed), Toast.LENGTH_SHORT).show()
                         return@ServerControlPanel
                     }
                     isStarting = true
@@ -415,7 +442,7 @@ fun MainScreen(
                 onStop = {
                     val service = usbService
                     if (service == null) {
-                        Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.service_not_ready), Toast.LENGTH_SHORT).show()
                         return@ServerControlPanel
                     }
                     isStopping = true
@@ -447,14 +474,19 @@ fun MainScreen(
                         return@DeviceListSection
                     }
                     if (usbService == null) {
-                        Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.service_not_ready), Toast.LENGTH_SHORT).show()
                         return@DeviceListSection
                     }
                     // 摄像头设备需要先获取 CAMERA 权限
                     if (isCameraDevice(device) &&
                         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
                     ) {
-                        pendingBindDevice = device
+                        if (pendingBindDeviceName != null) {
+                            // 已有待处理请求（权限对话框未完成），忽略新的，
+                            // 防止 pendingBindDeviceName 被覆盖导致授权后绑错设备
+                            return@DeviceListSection
+                        }
+                        pendingBindDeviceName = device.deviceName
                         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     } else {
                         performBind(device)
@@ -463,7 +495,7 @@ fun MainScreen(
                 onUnbindDevice = { device ->
                     val service = usbService
                     if (service == null) {
-                        Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.service_not_ready), Toast.LENGTH_SHORT).show()
                         return@DeviceListSection
                     }
                     val deviceName = device.productName?.takeIf { it.isNotEmpty() }
@@ -497,7 +529,7 @@ fun MainScreen(
                 onCopyLog = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("Log", logMessages.joinToString("\n")))
-                    Toast.makeText(context, "Log copied", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.log_copied), Toast.LENGTH_SHORT).show()
                 }
             )
         }

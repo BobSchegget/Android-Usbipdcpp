@@ -125,22 +125,27 @@ class UsbPermissionManager(
         return usbManager.hasPermission(device)
     }
 
-    fun requestPermission(device: UsbDevice, callback: (UsbDevice, Boolean) -> Unit) {
+    /**
+     * @return true 表示请求已受理（含已有权限直接回调的情况），
+     *         false 表示同设备已有待处理请求、本次未受理
+     */
+    fun requestPermission(device: UsbDevice, callback: (UsbDevice, Boolean) -> Unit): Boolean {
         if (usbManager.hasPermission(device)) {
             callback(device, true)
-            return
+            return true
         }
 
         // 锁内只存回调，锁外发起系统请求：避免持锁调用可能同步回调的外部代码。
-        // 同一设备已有待处理请求时忽略新的：重复点击会导致系统只弹一次对话框，
-        // 回调被覆盖后前一次请求的 UI 状态（如 busyDevices）无法清除
+        // 同一设备已有待处理请求时拒绝新的：重复点击系统只弹一次对话框，
+        // 回调被覆盖会导致前一次请求的 UI 状态（如 busyDevices）无法清除
         synchronized(lock) {
             if (pendingCallbacks.containsKey(device.deviceName)) {
-                return
+                return false
             }
             pendingCallbacks[device.deviceName] = callback
         }
         usbManager.requestPermission(device, permissionIntent)
+        return true
     }
 
     fun openDevice(device: UsbDevice): UsbDeviceConnection? {

@@ -53,6 +53,10 @@
     <string name="error_get_config_failed">Failed to get configuration descriptor</string>
     <string name="error_claim_interface_failed">Failed to claim interface</string>
     <string name="error_unknown">Unknown error</string>
+    <string name="service_not_ready">Service not ready</string>
+    <string name="log_copied">Log copied</string>
+    <string name="native_init_failed">Native library initialization failed</string>
+    <string name="permission_request_pending">Permission request already in progress</string>
 
     <!-- Language -->
     <string name="language">Language</string>

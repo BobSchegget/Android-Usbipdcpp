@@ -89,7 +89,9 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_nativeInit(JNIEnv* env, jobject thiz) {
 JNIEXPORT void JNICALL
 Java_com_yunsmall_usbipdcpp_UsbIpNative_setLogCallback(JNIEnv* env, jobject thiz, jobject callback) {
     if (callback == nullptr) {
-        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "setLogCallback with null callback");
+        // null 表示清除回调：UI 销毁（应用退后台）时释放全局引用，
+        // 否则旧 Activity 会被 JNI 全局引用一直持有导致泄漏
+        jni_log::cleanup(env);
         return;
     }
 
@@ -103,7 +105,8 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_setLogCallback(JNIEnv* env, jobject thiz
     jmethodID log_method = env->GetMethodID(callback_class, "onLog", "(ILjava/lang/String;)V");
     env->DeleteLocalRef(callback_class);
     if (log_method == nullptr) {
-        // GetMethodID 失败时 JNI 栈上挂着 NoSuchMethodError，清掉并释放引用
+        // GetMethodID 失败时 JNI 栈上挂着 NoSuchMethodError，清掉并释放引用。
+        // 不重置 spdlog 与旧回调：保留旧回调继续输出日志，比静默丢日志更合理
         env->ExceptionClear();
         env->DeleteGlobalRef(callback_global);
         __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "Failed to find onLog method");
@@ -310,6 +313,13 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_notifyDeviceRemovedNative(
     JNIEnv* env, jobject thiz, jstring busid) {
 
     const char* busid_cstr = env->GetStringUTFChars(busid, nullptr);
+    if (busid_cstr == nullptr) {
+        // OOM：GetStringUTFChars 返回 null 并挂 OutOfMemoryError，
+        // 直接构造 std::string 会崩溃，清异常后安全返回
+        env->ExceptionClear();
+        spdlog::error("Failed to get busid string");
+        return;
+    }
     std::string busid_str(busid_cstr);
     env->ReleaseStringUTFChars(busid, busid_cstr);
 

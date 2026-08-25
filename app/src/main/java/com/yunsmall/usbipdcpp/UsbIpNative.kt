@@ -24,7 +24,8 @@ object UsbIpNative {
     }
 
     external fun nativeInit(): Boolean
-    external fun setLogCallback(callback: LogCallback)
+    // callback 传 null 表示清除回调（释放 JNI 全局引用），UI 销毁时调用
+    external fun setLogCallback(callback: LogCallback?)
     external fun bindUsbDeviceNative(fd: Int, vendorId: Int, productId: Int, outBusid: Array<String?>): Int
     external fun unbindUsbDeviceNative(fd: Int): Int
     external fun notifyDeviceRemovedNative(busid: String)
