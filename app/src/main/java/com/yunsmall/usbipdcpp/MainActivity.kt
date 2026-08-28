@@ -53,6 +53,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
 import com.yunsmall.usbipdcpp.ui.theme.UsbipdcppTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -86,12 +87,91 @@ class MainActivity : AppCompatActivity() {
             serviceBound = true
             refreshDevicesCallback?.invoke()
             onServiceStateChanged?.invoke()
+        
+            Log.i("T300Auto", "UsbService connected")
+            autoStartAndBindT300()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             usbService = null
             serviceBound = false
             onServiceStateChanged?.invoke()
+        }
+    }
+
+    private fun autoStartAndBindT300() {
+        val service = usbService
+    
+        if (service == null) {
+            Log.i("T300Auto", "USB service not ready yet")
+            return
+        }
+    
+        lifecycleScope.launch {
+            // Start USB/IP server automatically
+            if (!service.serverRunning) {
+                Log.i("T300Auto", "Starting USB/IP server on port 3240")
+    
+                val started = service.startServer(3240)
+    
+                if (!started) {
+                    Log.e("T300Auto", "Failed to start USB/IP server")
+                    return@launch
+                }
+    
+                Log.i("T300Auto", "USB/IP server started")
+            }
+    
+            // Look again AFTER server startup in case USB enumeration changed.
+            val device = usbManager.deviceList.values.firstOrNull {
+                isT300Device(it)
+            }
+    
+            if (device == null) {
+                Log.i("T300Auto", "No T300 currently present")
+                return@launch
+            }
+    
+            Log.i(
+                "T300Auto",
+                "Found T300 ${device.vendorId.toString(16)}:${device.productId.toString(16)} at ${device.deviceName}"
+            )
+    
+            if (service.boundDeviceNames.contains(device.deviceName)) {
+                Log.i("T300Auto", "T300 already bound")
+                return@launch
+            }
+    
+            fun bindDevice(grantedDevice: UsbDevice) {
+                lifecycleScope.launch {
+                    Log.i("T300Auto", "Binding ${grantedDevice.deviceName}")
+    
+                    val result = service.bindDevice(
+                        usbManager,
+                        grantedDevice
+                    )
+    
+                    Log.i("T300Auto", "Bind result: $result")
+    
+                    refreshDevicesCallback?.invoke()
+                }
+            }
+    
+            if (permissionManager.hasPermission(device)) {
+                Log.i("T300Auto", "USB permission already granted")
+                bindDevice(device)
+            } else {
+                Log.i("T300Auto", "Requesting USB permission")
+    
+                permissionManager.requestPermission(device) { grantedDevice, granted ->
+                    if (granted) {
+                        Log.i("T300Auto", "USB permission granted")
+                        bindDevice(grantedDevice)
+                    } else {
+                        Log.e("T300Auto", "USB permission denied")
+                    }
+                }
+            }
         }
     }
 
@@ -139,11 +219,12 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         handleUsbIntent(intent)
     }
-
+    
     private fun handleUsbIntent(intent: Intent?) {
         if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            Log.d(TAG, "USB device attached via intent")
+            Log.i("T300Auto", "USB device attached via intent")
             refreshDevicesCallback?.invoke()
+            autoStartAndBindT300()
         }
     }
 
@@ -292,41 +373,6 @@ fun MainScreen(
         }
     }
 
-    fun autoStartAndBindT300(service: UsbService?) {
-        if (service == null) return
-    
-        scope.launch {
-            if (!service.serverRunning) {
-                val started = service.startServer(3240)
-                if (!started) return@launch
-    
-                serverRunning = true
-            }
-    
-            // Give Android a moment to finish USB enumeration.
-            kotlinx.coroutines.delay(300)
-    
-            val device = permissionManager.getDeviceList().values
-                .firstOrNull { isT300Device(it) }
-                ?: return@launch
-    
-            // Already exported: nothing to do.
-            if (service.boundDeviceNames.contains(device.deviceName)) {
-                return@launch
-            }
-    
-            permissionManager.requestPermission(device) { grantedDevice, granted ->
-                if (granted) {
-                    scope.launch {
-                        service.bindDevice(usbManager, grantedDevice)
-                        boundDevices = service.boundDeviceNames
-                        refreshDevices()
-                    }
-                }
-            }
-        }
-    }
-
     // 获取设备IP地址
     fun getDeviceIpAddress(): String? {
         try {
@@ -387,7 +433,6 @@ fun MainScreen(
     LaunchedEffect(serviceBound, usbService) {
         onRefreshCallbackReady {
             refreshDevices()
-            autoStartAndBindT300(usbService)
         }
     
         refreshDevices()
@@ -404,7 +449,6 @@ fun MainScreen(
     DisposableEffect(permissionManager) {
         permissionManager.setOnDeviceAttachedListener {
             refreshDevices()
-            autoStartAndBindT300(currentService)
         }
         permissionManager.setOnDeviceDetachedListener { device ->
             scope.launch {
