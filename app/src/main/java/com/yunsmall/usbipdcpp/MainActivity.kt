@@ -437,10 +437,6 @@ fun MainScreen(
     
         refreshDevices()
         refreshState()
-    
-        if (serviceBound) {
-            autoStartAndBindT300(usbService)
-        }
     }
 
     // 监听USB设备插入/拔出（通过BroadcastReceiver）
