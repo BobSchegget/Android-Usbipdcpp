@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 匹配所有USB设备 -->
-    <usb-device />
+    <!-- T300 initial mode: 044f:b65d -->
+    <usb-device vendor-id="1103" product-id="46685" />
+
+    <!-- T300 initialized mode: 044f:b66e -->
+    <usb-device vendor-id="1103" product-id="46702" />
 </resources>
