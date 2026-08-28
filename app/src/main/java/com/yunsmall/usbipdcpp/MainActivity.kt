@@ -170,6 +170,11 @@ fun isCameraDevice(device: UsbDevice): Boolean {
     return false
 }
 
+fun isT300Device(device: UsbDevice): Boolean {
+    return device.vendorId == 0x044f &&
+        (device.productId == 0xb65d || device.productId == 0xb66e)
+}
+
 fun setLanguage(language: String) {
     val localeList = if (language == "system") {
         LocaleListCompat.getEmptyLocaleList()
@@ -287,6 +292,41 @@ fun MainScreen(
         }
     }
 
+    fun autoStartAndBindT300(service: UsbService?) {
+        if (service == null) return
+    
+        scope.launch {
+            if (!service.serverRunning) {
+                val started = service.startServer(3240)
+                if (!started) return@launch
+    
+                serverRunning = true
+            }
+    
+            // Give Android a moment to finish USB enumeration.
+            kotlinx.coroutines.delay(300)
+    
+            val device = permissionManager.getDeviceList().values
+                .firstOrNull { isT300Device(it) }
+                ?: return@launch
+    
+            // Already exported: nothing to do.
+            if (service.boundDeviceNames.contains(device.deviceName)) {
+                return@launch
+            }
+    
+            permissionManager.requestPermission(device) { grantedDevice, granted ->
+                if (granted) {
+                    scope.launch {
+                        service.bindDevice(usbManager, grantedDevice)
+                        boundDevices = service.boundDeviceNames
+                        refreshDevices()
+                    }
+                }
+            }
+        }
+    }
+
     // 获取设备IP地址
     fun getDeviceIpAddress(): String? {
         try {
@@ -345,9 +385,17 @@ fun MainScreen(
 
     // Service 状态变化时刷新
     LaunchedEffect(serviceBound, usbService) {
-        onRefreshCallbackReady { refreshDevices() }
+        onRefreshCallbackReady {
+            refreshDevices()
+            autoStartAndBindT300(usbService)
+        }
+    
         refreshDevices()
         refreshState()
+    
+        if (serviceBound) {
+            autoStartAndBindT300(usbService)
+        }
     }
 
     // 监听USB设备插入/拔出（通过BroadcastReceiver）
@@ -356,6 +404,7 @@ fun MainScreen(
     DisposableEffect(permissionManager) {
         permissionManager.setOnDeviceAttachedListener {
             refreshDevices()
+            autoStartAndBindT300(currentService)
         }
         permissionManager.setOnDeviceDetachedListener { device ->
             scope.launch {
