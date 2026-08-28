@@ -23,6 +23,34 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          
+      - name: Patch T300 USB speed on Android
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/src/main/cpp/usbipdcpp/src/LibusbHandler/LibusbServer.cpp")
+          text = path.read_text()
+
+          old = """auto speed = (std::uint32_t) libusb_speed_to_usb_speed(libusb_get_device_speed(device_for_info));"""
+
+          new = """auto detected_speed = libusb_get_device_speed(device_for_info);
+              if (detected_speed == LIBUSB_SPEED_UNKNOWN &&
+                  device_descriptor.idVendor == 0x044f &&
+                  (device_descriptor.idProduct == 0xb65d ||
+                   device_descriptor.idProduct == 0xb66e)) {
+                  detected_speed = LIBUSB_SPEED_FULL;
+                  SPDLOG_WARN("Android/libusb reported UNKNOWN speed for T300; forcing FULL speed");
+              }
+              auto speed = (std::uint32_t) libusb_speed_to_usb_speed(detected_speed);"""
+
+          if old not in text:
+              raise SystemExit("Expected usbipdcpp speed line not found")
+
+          path.write_text(text.replace(old, new, 1))
+          print("T300 USB speed patch applied")
+          PY
+      
 
       - name: 设置 JDK 17
         uses: actions/setup-java@v4
